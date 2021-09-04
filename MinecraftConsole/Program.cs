@@ -41,6 +41,17 @@ namespace MinecraftConsole
                 _settings.SetInt32("ramSize", value);
             }
         }
+        private static bool AutoRestart
+        {
+            get
+            {
+                return _settings.GetBool(name: "AutoRestart", valueIfNull: true);
+            }
+            set
+            {
+                _settings.SetBool(name: "AutoRestart", value);
+            }
+        }
         private static string SelectedServerJar
         {
             get
@@ -74,20 +85,102 @@ namespace MinecraftConsole
             }
         }
         private static bool _changeSettings;
+        private static char seperator = Path.DirectorySeparatorChar;
+        private static string profileName = "default";
+        private static string profileRoot = "profiles";
+        private static string profileDirectory => $"{profileRoot}{seperator}{profileName}";
+        private static string profileProperties => $"{profileDirectory}{seperator}server.properties";
 
-        static void Main()
+        static void Main(string[] args)
         {
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (args[i].Equals("--profile"))
+                {
+                    profileName = args[i + 1];
+                    break;
+                }
+            }
+
         Restart:
             Console.ForegroundColor = ConsoleColor.Gray;
             if (_settings == null)
                 _settings = new SettingsV2("MinecraftConsole", "MinecraftConsoleSettings", "RexTheCapt", SettingsV2.LocationEnum.Program);
+
+            SetupProfile();
             SelectJavaPath();
             SelectRamSize();
             SelectServerJar();
+            SetAutoRestart();
             StartServer();
+            SaveProfile();
             _settings.Save();
+
             if (_changeSettings)
+            {
+                _changeSettings = false;
                 goto Restart;
+            }
+        }
+
+        private static void SetAutoRestart()
+        {
+            Console.CursorVisible = false;
+            Console.WriteLine("Auto restart server?");
+
+            (int Left, int Top) p = Console.GetCursorPosition();
+            while (true)
+            {
+                Console.SetCursorPosition(p.Left, p.Top);
+                Console.ForegroundColor = ConsoleColor.Gray;
+                Console.Write("  < ");
+                if (AutoRestart)
+                {
+                    Console.ForegroundColor = ConsoleColor.Green;
+                    Console.Write("TRUE ");
+                }
+                else
+                {
+                    Console.ForegroundColor = ConsoleColor.Red;
+                    Console.Write("FALSE");
+                }
+                Console.ForegroundColor = ConsoleColor.Gray;
+                Console.Write(" >");
+
+                ConsoleKeyInfo input = Console.ReadKey(true);
+                if (input.Key == ConsoleKey.LeftArrow || input.Key == ConsoleKey.RightArrow)
+                    AutoRestart = !AutoRestart;
+                else if (input.Key == ConsoleKey.Enter)
+                {
+                    Console.CursorVisible = true;
+                    Console.WriteLine();
+                    return;
+                }
+            }
+        }
+
+        private static void SaveProfile()
+        {
+            if (File.Exists(profileProperties))
+                File.Delete(profileProperties);
+            File.Copy("server.properties", profileProperties);
+        }
+
+        private static void SetupProfile()
+        {
+            if (!Directory.Exists(profileRoot))
+                Directory.CreateDirectory(profileRoot);
+
+            if (!Directory.Exists(profileDirectory))
+                Directory.CreateDirectory(profileDirectory);
+
+            if (File.Exists($"{profileDirectory}{seperator}server.properties"))
+            {
+                if (File.Exists("server.properties"))
+                    File.Delete("server.properties");
+
+                File.Copy($"{profileDirectory}{seperator}server.properties", "server.properties");
+            }
         }
 
         private static void StartServer()
@@ -96,9 +189,10 @@ namespace MinecraftConsole
             {
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine($"Server starting with settings:\n" +
-                    $"Java: {SelectedJava}\n" +
-                    $"Jar:  {SelectedServerJar}\n" +
-                    $"RAM:  {RamSize}G");
+                    $"Java:    {SelectedJava}\n" +
+                    $"Jar:     {SelectedServerJar}\n" +
+                    $"RAM:     {RamSize}G\n" +
+                    $"Restart: {(AutoRestart ? "TRUE" : "FALSE")}");
                 Console.ForegroundColor = ConsoleColor.Gray;
 
                 using (Process p = new())
@@ -146,7 +240,7 @@ namespace MinecraftConsole
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 DateTime endTime = DateTime.Now.AddSeconds(10);
                 bool stop = false;
-                while (endTime > DateTime.Now)
+                while (endTime > DateTime.Now && AutoRestart)
                 {
                     Console.Write($"\rServer restarting in {endTime - DateTime.Now}, press any button to shutdown or C to change settings.");
 
@@ -167,7 +261,7 @@ namespace MinecraftConsole
 
                 Console.ForegroundColor = ConsoleColor.Gray;
 
-                if (stop)
+                if (stop || !AutoRestart)
                     break;
             }
         }
@@ -313,7 +407,8 @@ namespace MinecraftConsole
                     index = 0;
             }
 
-            Console.WriteLine("Please select java. (Press A to add, D to delete)");
+            string prompt = "Please select java. (Press A to add, D to delete)";
+            Console.WriteLine(prompt);
             (int Left, int Top) = Console.GetCursorPosition();
             while (true)
             {
@@ -380,6 +475,20 @@ namespace MinecraftConsole
 
                     javaSelections = GetJavaPaths();
                 }
+                else if (input.Key == ConsoleKey.D)
+                {
+                    Selection selection = javaSelections[index];
+
+                    for (int i = javaSelections.Count - 1; i >= 0; i--)
+                        if (javaSelections[i].Path.Equals(selection.Path, StringComparison.OrdinalIgnoreCase))
+                            javaSelections.RemoveAt(i);
+
+                    Console.ForegroundColor = ConsoleColor.Gray;
+                    Console.WriteLine($"Removed \"{selection.Path}\"");
+                    Console.WriteLine(prompt);
+                    Left = Console.CursorLeft;
+                    Top = Console.CursorTop;
+                }
                 else
                     goto RedoInput;
 
@@ -393,9 +502,21 @@ namespace MinecraftConsole
             Selection home = GetJavaFromHome();
             if (home != null)
                 selections.Add(home);
-            selections.Add(GetJavaFromRegistryKey());
+            //selections.Add(GetJavaFromRegistryKey());
+            selections.AddRange(GetJavaFromDefaultInstallLocation());
             selections.AddRange(GetJavaFromSettings());
             return selections;
+        }
+
+        private static List<Selection> GetJavaFromDefaultInstallLocation()
+        {
+            List<Selection> installs = new();
+
+            foreach (var dir in Directory.GetDirectories($@"C:\Program Files\Java"))
+                if (File.Exists($@"{dir}\bin\java.exe"))
+                    installs.Add(new Selection($@"{dir}\bin\java.exe", Selection.SelectionType.EnvironmentVariable));
+
+            return installs;
         }
 
         private static List<Selection> GetJavaFromSettings()
@@ -418,7 +539,7 @@ namespace MinecraftConsole
                 string currentVersion = rk.GetValue("CurrentVersion").ToString();
                 using (Microsoft.Win32.RegistryKey key = rk.OpenSubKey(currentVersion))
                 {
-                    string s = key.GetValue("JavaHome").ToString();
+                    string s = $"{key.GetValue("JavaHome").ToString()}\\bin\\java.exe";
 
                     if (s == null)
                         return null;
